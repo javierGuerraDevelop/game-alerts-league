@@ -5,6 +5,7 @@ import logging
 import sys
 
 import pytest
+
 from common import (
     DEFAULT_DELAY_SECONDS,
     DEFAULT_TTL_DAYS,
