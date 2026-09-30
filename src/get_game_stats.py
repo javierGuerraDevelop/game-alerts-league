@@ -14,7 +14,9 @@ import boto3
 from common import (
     RIOT_TIMEOUT_SECONDS,
     configure_logging,
+    expires_at_epoch,
     http_get,
+    parse_ttl_days,
     require_env,
     resolve_riot_api_key,
     riot_api_error,
@@ -32,6 +34,7 @@ class StatsConfig:
     match_region: str
     table_name: str
     riot_api_key: str
+    ttl_days: int
 
 
 def load_config(secrets_client: Any) -> StatsConfig:
@@ -42,6 +45,7 @@ def load_config(secrets_client: Any) -> StatsConfig:
         riot_api_key=resolve_riot_api_key(
             secrets_client, os.environ.get("RIOT_API_KEY_SECRET_ARN", "").strip()
         ),
+        ttl_days=parse_ttl_days(os.environ.get("STATS_TTL_DAYS")),
     )
 
 
@@ -77,6 +81,7 @@ def build_stats_record(
     puuid: str,
     match: Mapping[str, Any],
     participant: Mapping[str, Any],
+    ttl_days: int,
 ) -> dict[str, Any]:
     """Build the game-stats item written to DynamoDB."""
     info = match.get("info", {})
@@ -106,6 +111,7 @@ def build_stats_record(
         "item4": participant.get("item4", 0),
         "item5": participant.get("item5", 0),
         "item6": participant.get("item6", 0),
+        "expiresAt": expires_at_epoch(ttl_days),
     }
 
 
@@ -131,7 +137,7 @@ def collect_stats(
         match_id, config.match_region, config.riot_api_key, http_get=http_get
     )
     participant = find_participant(match, match_id, puuid)
-    record = build_stats_record(match_id, puuid, match, participant)
+    record = build_stats_record(match_id, puuid, match, participant, config.ttl_days)
     store_stats(dynamo_client, config.table_name, record)
     _LOG.info("stored stats for match %s", match_id)
 
