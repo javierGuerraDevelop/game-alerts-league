@@ -1,6 +1,7 @@
 """Tests for the stats collector Lambda."""
 
 import json
+import time
 
 import pytest
 
@@ -124,12 +125,14 @@ def make_config() -> StatsConfig:
         match_region="americas",
         table_name="game-stats",
         riot_api_key="test-api-key",
+        ttl_days=30,
     )
 
 
 def test_success_persists_all_fields() -> None:
     http = FakeHttp(body=json.dumps(MATCH))
     dynamo = FakeDynamo()
+    before = time.time()
 
     collect_stats(
         {"matchId": "NA1_12345", "puuid": "test-puuid"},
@@ -138,10 +141,14 @@ def test_success_persists_all_fields() -> None:
         http_get=http,
     )
 
+    after = time.time()
     assert len(dynamo.put_calls) == 1
     call = dynamo.put_calls[0]
     assert call["TableName"] == "game-stats"
-    assert call["Item"] == EXPECTED_ITEM
+    item = dict(call["Item"])
+    expires_at = item.pop("expiresAt")
+    assert item == EXPECTED_ITEM
+    assert before + 29 * 86400 <= expires_at <= after + 31 * 86400
 
 
 def test_match_request_targets_the_regional_route() -> None:
