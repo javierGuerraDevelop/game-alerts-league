@@ -157,7 +157,7 @@ def test_load_config_requires_core_variables(monkeypatch: pytest.MonkeyPatch) ->
         monkeypatch.delenv(name, raising=False)
 
     with pytest.raises(RuntimeError, match="PLAYERS_TABLE_NAME"):
-        load_config()
+        load_config(None)
 
 
 def test_load_config_applies_region_and_delay_defaults(
@@ -167,7 +167,7 @@ def test_load_config_applies_region_and_delay_defaults(
     monkeypatch.delenv("RIOT_REGION", raising=False)
     monkeypatch.delenv("GAME_STATS_DELAY_SECONDS", raising=False)
 
-    config = load_config()
+    config = load_config(None)
 
     assert config.players_table == "players"
     assert config.match_region == "americas"
@@ -179,7 +179,7 @@ def test_load_config_clamps_too_small_delay(monkeypatch: pytest.MonkeyPatch) -> 
     set_required_env(monkeypatch)
     monkeypatch.setenv("GAME_STATS_DELAY_SECONDS", "30")
 
-    assert load_config().delay_seconds == 60
+    assert load_config(None).delay_seconds == 60
 
 
 def test_scan_players_paginates_until_all_pages_are_read() -> None:
@@ -379,7 +379,7 @@ def test_delay_seconds_from_environment_reaches_execution_input(
     sfn = FakeSfn()
     http = FakeHttp(responses=spectator_active(active_game()))
 
-    check_players(load_config(), dynamo, sfn, http_get=http)
+    check_players(load_config(None), dynamo, sfn, http_get=http)
 
     assert json.loads(sfn.calls[0]["input"])["delaySeconds"] == 1800
 

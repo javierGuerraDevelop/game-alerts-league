@@ -65,6 +65,22 @@ def require_env(name: str) -> str:
     return value
 
 
+def resolve_riot_api_key(secrets_client: Any, secret_arn: str) -> str:
+    """Resolve the Riot API key, preferring the local-development environment value."""
+    env_key = os.environ.get("RIOT_API_KEY", "")
+    if env_key:
+        return env_key
+    if not secret_arn.strip():
+        raise RuntimeError(
+            "missing required environment variable RIOT_API_KEY_SECRET_ARN"
+        )
+    result = secrets_client.get_secret_value(SecretId=secret_arn)
+    api_key = (result.get("SecretString") or "").strip()
+    if not api_key:
+        raise RuntimeError(f"riot api key secret {secret_arn} is empty")
+    return api_key
+
+
 def aws_error_code(err: Exception) -> str:
     """Extract the AWS error code from a boto3 ClientError-like exception."""
     response = getattr(err, "response", None)

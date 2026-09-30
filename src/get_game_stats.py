@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 import boto3
 
-from common import configure_logging, http_get, require_env
+from common import (
+    configure_logging,
+    http_get,
+    require_env,
+    resolve_riot_api_key,
+)
 
 _LOG = logging.getLogger(__name__)
 
@@ -26,12 +32,14 @@ class StatsConfig:
     riot_api_key: str
 
 
-def load_config() -> StatsConfig:
+def load_config(secrets_client: Any) -> StatsConfig:
     """Load and validate the collector configuration from the environment."""
     return StatsConfig(
         match_region=require_env("MATCH_REGION"),
         table_name=require_env("DYNAMO_TABLE_NAME"),
-        riot_api_key=require_env("RIOT_API_KEY"),
+        riot_api_key=resolve_riot_api_key(
+            secrets_client, os.environ.get("RIOT_API_KEY_SECRET_ARN", "").strip()
+        ),
     )
 
 
@@ -127,5 +135,5 @@ def collect_stats(
 def lambda_handler(event, context):
     """Lambda entry point: build real clients and configuration."""
     configure_logging()
-    config = load_config()
+    config = load_config(boto3.client("secretsmanager"))
     collect_stats(event, config, boto3.client("dynamodb"))

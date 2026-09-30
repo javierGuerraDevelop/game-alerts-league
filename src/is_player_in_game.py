@@ -19,6 +19,7 @@ from common import (
     http_get,
     parse_delay_seconds,
     require_env,
+    resolve_riot_api_key,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -43,13 +44,15 @@ class SensorConfig:
     delay_seconds: int
 
 
-def load_config() -> SensorConfig:
+def load_config(secrets_client: Any) -> SensorConfig:
     """Load and validate the sensor configuration from the environment."""
     return SensorConfig(
         players_table=require_env("PLAYERS_TABLE_NAME"),
         stats_table=require_env("DYNAMO_TABLE_NAME"),
         state_machine_arn=require_env("STATE_MACHINE_ARN"),
-        riot_api_key=require_env("RIOT_API_KEY"),
+        riot_api_key=resolve_riot_api_key(
+            secrets_client, os.environ.get("RIOT_API_KEY_SECRET_ARN", "").strip()
+        ),
         riot_region=os.environ.get("RIOT_REGION", "").strip() or "na1",
         match_region=require_env("MATCH_REGION"),
         delay_seconds=parse_delay_seconds(os.environ.get("GAME_STATS_DELAY_SECONDS")),
@@ -281,5 +284,5 @@ def check_players(
 def lambda_handler(event, context):
     """Lambda entry point: build real clients and configuration."""
     configure_logging()
-    config = load_config()
+    config = load_config(boto3.client("secretsmanager"))
     check_players(config, boto3.client("dynamodb"), boto3.client("stepfunctions"))
