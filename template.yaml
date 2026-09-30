@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Trolling Time - League of Legends game alerts and post-game stats.
+
+Parameters:
+  RiotApiKey:
+    Type: String
+    NoEcho: true
+    Description: Riot API key used to call the Riot APIs.
+  SesSenderEmail:
+    Type: String
+    Description: Verified SES identity used as the notification sender.
+  RecipientEmail:
+    Type: String
+    Description: Email address that receives game notifications and alarms.
+  DiscordWebhookUrl:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Discord webhook URL; Discord notifications are skipped when empty.
+  MatchRegion:
+    Type: String
+    Default: americas
+    AllowedValues:
+      - americas
+      - europe
+      - asia
+    Description: Regional route for Account-V1 and Match-V5.
+
+Globals:
+  Function:
+    Runtime: python3.13
+    Architectures:
+      - arm64
+    Timeout: 10
+    MemorySize: 128
+
+Resources:
+  NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${AWS::StackName}-notifications"
+
+  GameStatsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-game-stats"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: matchId
+          AttributeType: S
+        - AttributeName: puuid
+          AttributeType: S
+      KeySchema:
+        - AttributeName: matchId
+          KeyType: HASH
+        - AttributeName: puuid
+          KeyType: RANGE
+
+  NotifyWebhooksFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: notify_webhooks.lambda_handler
+      Environment:
+        Variables:
+          DISCORD_WEBHOOK_URL: !Ref DiscordWebhookUrl
+          SES_SENDER_EMAIL: !Ref SesSenderEmail
+          RECIPIENT_EMAIL: !Ref RecipientEmail
+      Events:
+        NotificationTopic:
+          Type: SNS
+          Properties:
+            Topic: !Ref NotificationTopic
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: ses:SendEmail
+              Resource: !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesSenderEmail}"
+
+  GetGameStatsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: get_game_stats.lambda_handler
+      Environment:
+        Variables:
+          MATCH_REGION: !Ref MatchRegion
+          DYNAMO_TABLE_NAME: !Ref GameStatsTable
+          RIOT_API_KEY: !Ref RiotApiKey
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameStatsTable
