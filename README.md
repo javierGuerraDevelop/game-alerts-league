@@ -30,82 +30,6 @@ SAM and shipped by a GitHub Actions pipeline.
    dead-letter queue and fails the execution, which raises a CloudWatch alarm.
 5. **Expire** — DynamoDB TTL deletes game records after `STATS_TTL_DAYS` (default 30).
 
-## Architecture
-
-### Components
-
-```mermaid
-flowchart LR
-    S["EventBridge<br/>rate(5 minutes)"] --> P["is_player_in_game<br/>sensor Lambda"]
-    P -->|"scan, paginated"| PT[("players table")]
-    P -->|"cache PUUID"| PT
-    P -->|"StartExecution"| SFN["Step Functions<br/>game lifecycle"]
-    P -.->|"best-effort placeholder"| GT[("game stats table")]
-    SFN -->|"publish alert"| T["SNS notifications"]
-    T --> N["notify_webhooks Lambda"]
-    N --> D["Discord webhook"]
-    N --> E["SES email"]
-    SFN -->|"wait delaySeconds"| W(("Wait"))
-    W -->|"invoke"| G["get_game_stats Lambda"]
-    G -->|"Match-V5"| R["Riot API"]
-    G -->|"full stats + TTL"| GT
-    SFN -->|"on failure"| DLQ[("stats DLQ")]
-    DLQ --> A["CloudWatch alarms"]
-    A --> AT["alarm topic (email)"]
-```
-
-### Alert to stats sequence
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant EB as EventBridge
-    participant Sensor as is_player_in_game
-    participant Riot as Riot API
-    participant SFN as Step Functions
-    participant SNS as SNS
-    participant Notifier as notify_webhooks
-    participant Stats as get_game_stats
-    participant DDB as DynamoDB
-
-    EB->>Sensor: rate(5 minutes)
-    Sensor->>DDB: scan tracked players
-    Sensor->>Riot: Account-V1 (resolve PUUID once)
-    Sensor->>Riot: Spectator-V5 (active game?)
-    alt player is in a game
-        Sensor->>SFN: StartExecution (deterministic name)
-        Sensor->>DDB: placeholder put (attribute_not_exists)
-        SFN->>SNS: publish alert
-        SNS->>Notifier: SNS event
-        Notifier->>Notifier: Discord webhook + SES email
-        SFN->>SFN: wait delaySeconds
-        SFN->>Stats: invoke with the execution input
-        Stats->>Riot: Match-V5
-        Stats->>DDB: full stats + expiresAt
-    else not in a game
-        Sensor->>Sensor: skip player
-    end
-```
-
-## Repository layout
-
-```text
-.
-├── template.yaml             # all AWS resources: Lambdas, DynamoDB, SNS, SQS, Step Functions, IAM, alarms
-├── samconfig.toml            # deploy defaults
-├── Makefile                  # fmt / lint / test / build / validate / clean
-├── pyproject.toml            # ruff + pytest configuration
-├── requirements-dev.txt      # dev-only tooling: pytest, pytest-cov, ruff, boto3
-├── src/
-│   ├── common.py             # JSON logging, config parsing, Riot HTTP client, secret resolution
-│   ├── is_player_in_game.py  # sensor Lambda
-│   ├── get_game_stats.py     # stats collector Lambda
-│   └── notify_webhooks.py    # notifier Lambda
-├── tests/                    # pytest suite, one module per handler
-├── events/                   # sample events for `sam local invoke`
-└── .github/workflows/ci.yml  # lint, test, template, deploy
-```
-
 ## Getting started
 
 Prerequisites:
@@ -209,50 +133,6 @@ All alarms publish to the alarms topic and email `RecipientEmail`. They use
 | `DetectionDLQAlarm` | `AWS/SQS` `ApproximateNumberOfMessagesVisible` for the detection DLQ | any visible message in a 5-minute period |
 | `StatsDLQAlarm` | `AWS/SQS` `ApproximateNumberOfMessagesVisible` for the stats DLQ | any visible message in a 5-minute period |
 | `StateMachineFailuresAlarm` | `AWS/States` `ExecutionsFailed` | any failed execution in a 5-minute period |
-
-### Inspecting dead-letter queues
-
-Messages in a dead-letter queue carry the full invocation or execution payload, so you
-can replay them after fixing the cause:
-
-```bash
-aws sqs get-queue-url --queue-name in-game-now-stats-dlq
-aws sqs receive-message --queue-url <queue-url> --max-number-of-messages 10
-```
-
-The detection DLQ holds asynchronous sensor invocations that failed; the stats DLQ
-holds game payloads whose stats collection failed after all retries.
-
-### Rotating the Riot API key
-
-Riot development keys expire every 24 hours, and production keys can be rotated on
-demand. Update the secret value — no redeploy is needed:
-
-```bash
-aws secretsmanager put-secret-value --secret-id in-game-now-notifications/riot-api-key \
-  --secret-string "$RIOT_API_KEY"
-```
-
-Functions read the secret at startup, so the next cold start picks up the new value.
-
-### Record expiry
-
-Both the placeholder and the full stats record carry `expiresAt`, and the game stats
-table has DynamoDB TTL enabled on it. DynamoDB deletes expired items automatically,
-typically within 48 hours after expiry. Tune the retention with the `STATS_TTL_DAYS`
-value in `template.yaml` (default 30 days).
-
-### Cost notes
-
-For a handful of tracked players the workload stays within the AWS free tier:
-
-- **Lambda** — one short invocation every 5 minutes, plus a few per detected game.
-- **Step Functions** (Standard) — one execution per detected game; waits are free and
-  only state transitions are billed.
-- **DynamoDB** — on-demand billing for tiny items; TTL deletes are free.
-- **SNS, SQS, SES** — negligible traffic at this scale.
-- **CloudWatch and X-Ray** — alarms and traces are the main variable cost; lower the
-  X-Ray sampling rate or the log retention if you want to be strict about it.
 
 ## Troubleshooting
 
