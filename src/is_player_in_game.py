@@ -14,12 +14,14 @@ from typing import Any
 import boto3
 
 from common import (
+    RIOT_TIMEOUT_SECONDS,
     aws_error_code,
     configure_logging,
     http_get,
     parse_delay_seconds,
     require_env,
     resolve_riot_api_key,
+    riot_api_error,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -90,9 +92,11 @@ def resolve_puuid(
         f"https://{config.match_region}.api.riotgames.com"
         f"/riot/account/v1/accounts/by-riot-id/{name}/{tag}"
     )
-    status, _headers, body = http_get(url, {"X-Riot-Token": config.riot_api_key})
+    status, headers, body = http_get(
+        url, {"X-Riot-Token": config.riot_api_key}, timeout=RIOT_TIMEOUT_SECONDS
+    )
     if status != 200:
-        raise RuntimeError(f"account lookup for {player_id} returned {status}: {body}")
+        raise riot_api_error(f"account lookup for {player_id}", status, headers, body)
 
     puuid = json.loads(body).get("puuid")
     if not puuid:
@@ -142,11 +146,13 @@ def fetch_active_game(
         f"https://{config.riot_region}.api.riotgames.com"
         f"/lol/spectator/v5/active-games/by-summoner/{puuid}"
     )
-    status, _headers, body = http_get(url, {"X-Riot-Token": config.riot_api_key})
+    status, headers, body = http_get(
+        url, {"X-Riot-Token": config.riot_api_key}, timeout=RIOT_TIMEOUT_SECONDS
+    )
     if status == 404:
         return None
     if status != 200:
-        raise RuntimeError(f"spectator lookup for {puuid} returned {status}: {body}")
+        raise riot_api_error(f"spectator lookup for {puuid}", status, headers, body)
     return json.loads(body)
 
 

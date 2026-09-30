@@ -16,6 +16,7 @@ DEFAULT_DELAY_SECONDS = 3600
 MIN_DELAY_SECONDS = 60
 MAX_DELAY_SECONDS = 31_536_000
 DEFAULT_TTL_DAYS = 30
+RIOT_TIMEOUT_SECONDS = 8.0
 
 _LOG = logging.getLogger(__name__)
 
@@ -140,6 +141,26 @@ def parse_ttl_days(raw: str | None) -> int:
         )
         return DEFAULT_TTL_DAYS
     return value
+
+
+class RateLimitedError(Exception):
+    """Riot API returned HTTP 429."""
+
+
+def riot_api_error(
+    prefix: str, status: int, headers: Mapping[str, str], body: str
+) -> Exception:
+    """Classify a non-200 Riot API response into the exception to raise."""
+    if status == 429:
+        retry_after = headers.get("Retry-After", "unknown")
+        return RateLimitedError(
+            f"{prefix} returned 429 (retry-after={retry_after}): {body}"
+        )
+    if status == 403:
+        return RuntimeError(
+            f"{prefix} returned 403: API key may be expired - rotate the secret: {body}"
+        )
+    return RuntimeError(f"{prefix} returned {status}: {body}")
 
 
 def http_get(

@@ -12,10 +12,12 @@ from typing import Any
 import boto3
 
 from common import (
+    RIOT_TIMEOUT_SECONDS,
     configure_logging,
     http_get,
     require_env,
     resolve_riot_api_key,
+    riot_api_error,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -52,9 +54,11 @@ def fetch_match(
 ) -> Mapping[str, Any]:
     """Fetch a match from Match-V5; any non-200 response is an error."""
     url = f"https://{match_region}.api.riotgames.com/lol/match/v5/matches/{match_id}"
-    status, _headers, body = http_get(url, {"X-Riot-Token": api_key})
+    status, headers, body = http_get(
+        url, {"X-Riot-Token": api_key}, timeout=RIOT_TIMEOUT_SECONDS
+    )
     if status != 200:
-        raise RuntimeError(f"match {match_id} fetch returned {status}: {body}")
+        raise riot_api_error(f"match fetch for {match_id}", status, headers, body)
     return json.loads(body)
 
 
