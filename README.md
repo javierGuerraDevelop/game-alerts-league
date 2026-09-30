@@ -1,4 +1,4 @@
-# Trolling Time
+# In Game Now Notifications
 
 AWS SAM serverless app that watches a small list of League of Legends players and
 sends Discord/email alerts when a tracked player enters a game, then stores post-game
@@ -12,7 +12,7 @@ the template or in `samconfig.toml`.
 Create the secret before deploying:
 
 ```bash
-aws secretsmanager create-secret --name trolling-time/riot-api-key \
+aws secretsmanager create-secret --name in-game-now-notifications/riot-api-key \
   --secret-string "$RIOT_API_KEY"
 ```
 
@@ -20,7 +20,7 @@ Riot development keys expire every 24 hours. Rotate the secret value without
 redeploying anything:
 
 ```bash
-aws secretsmanager put-secret-value --secret-id trolling-time/riot-api-key \
+aws secretsmanager put-secret-value --secret-id in-game-now-notifications/riot-api-key \
   --secret-string "$RIOT_API_KEY"
 ```
 

@@ -6,7 +6,7 @@
       "Sns": {
         "Type": "Notification",
         "MessageId": "example-message-id",
-        "TopicArn": "arn:aws:sns:us-east-1:123456789012:trolling-time-notifications",
+        "TopicArn": "arn:aws:sns:us-east-1:123456789012:in-game-now-notifications",
         "Message": "{\"playerName\": \"Player\", \"gameMode\": \"CLASSIC\", \"championId\": 99, \"gameStartTime\": 1700000000000}",
         "Timestamp": "2023-11-14T22:13:20.000Z"
       }

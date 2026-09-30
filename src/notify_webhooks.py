@@ -106,16 +106,16 @@ def send_notification(
     if discord_url:
         try:
             send_discord(discord_url, notification, http_post=http_post)
-        except Exception:  # noqa: BLE001 - channel errors must not fail the handler
-            _LOG.exception("discord notification failed")
+        except Exception as err:  # noqa: BLE001 - channel errors must not fail the handler
+            _LOG.exception("discord notification failed", extra={"err": str(err)})
     else:
         _LOG.info("discord webhook not configured; skipping")
 
     if sender_email and recipient_email:
         try:
             send_email(ses_client, sender_email, recipient_email, notification)
-        except Exception:  # noqa: BLE001 - channel errors must not fail the handler
-            _LOG.exception("email notification failed")
+        except Exception as err:  # noqa: BLE001 - channel errors must not fail the handler
+            _LOG.exception("email notification failed", extra={"err": str(err)})
     else:
         _LOG.info("ses email not fully configured; skipping")
 
@@ -135,7 +135,9 @@ def handle_event(
         try:
             notification = json.loads(raw_message)
         except (TypeError, ValueError) as err:
-            _LOG.error("skipping malformed sns message: %s", err)
+            _LOG.error(
+                "skipping malformed sns message: %s", err, extra={"err": str(err)}
+            )
             continue
         send_notification(
             notification,

@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: Trolling Time - League of Legends game alerts and post-game stats.
+Description: In Game Now Notifications - League of Legends game alerts and post-game stats.
 
 Parameters:
   RiotApiKeySecretArn:
@@ -37,12 +37,25 @@ Globals:
       - arm64
     Timeout: 10
     MemorySize: 128
+    Tracing: Active
 
 Resources:
   NotificationTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: !Sub "${AWS::StackName}-notifications"
+
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${AWS::StackName}-alarms"
+
+  AlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref RecipientEmail
 
   PlayersTable:
     Type: AWS::DynamoDB::Table
@@ -81,11 +94,18 @@ Resources:
       QueueName: !Sub "${AWS::StackName}-stats-dlq"
       MessageRetentionPeriod: 1209600
 
+  DetectionDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-detection-dlq"
+
   GameLifecycleStateMachine:
     Type: AWS::Serverless::StateMachine
     Properties:
       Name: !Sub "${AWS::StackName}-game-lifecycle"
       Type: STANDARD
+      Tracing:
+        Enabled: true
       DefinitionSubstitutions:
         NotificationTopicArn: !Ref NotificationTopic
         GetGameStatsFunctionArn: !GetAtt GetGameStatsFunction.Arn
@@ -189,6 +209,13 @@ Resources:
             - Effect: Allow
               Action: states:StartExecution
               Resource: !Ref GameLifecycleStateMachine
+        - Statement:
+            - Effect: Allow
+              Action: sqs:SendMessage
+              Resource: !GetAtt DetectionDeadLetterQueue.Arn
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt DetectionDeadLetterQueue.Arn
       Events:
         Schedule:
           Type: Schedule
@@ -235,3 +262,75 @@ Resources:
             - Effect: Allow
               Action: secretsmanager:GetSecretValue
               Resource: !Ref RiotApiKeySecretArn
+
+  DetectionLambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The sensor lambda reported errors.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref IsPlayerInGameFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  DetectionDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Messages are visible in the detection dead-letter queue.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt DetectionDeadLetterQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  StatsDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Messages are visible in the stats dead-letter queue.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt StatsDeadLetterQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  StateMachineFailuresAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The game lifecycle state machine has failed executions.
+      Namespace: AWS/States
+      MetricName: ExecutionsFailed
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref GameLifecycleStateMachine
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
