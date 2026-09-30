@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   lint:
@@ -33,4 +34,48 @@ jobs:
       - name: Install test tools
         run: pip install -r requirements-dev.txt
       - name: Run tests
-        run: pytest -q
+        run: pytest -q --cov=src --cov-report=xml
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage.xml
+
+  template:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - uses: aws-actions/setup-sam@v3
+      - name: Validate template
+        run: sam validate --lint
+      - name: Build
+        run: sam build
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint, test, template]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - uses: aws-actions/setup-sam@v3
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Build
+        run: sam build
+      - name: Deploy
+        run: |
+          sam deploy --no-confirm-changeset --no-fail-on-empty-changeset \
+            --parameter-overrides \
+            RiotApiKeySecretArn=${{ secrets.RIOT_API_KEY_SECRET_ARN }} \
+            SesSenderEmail=${{ secrets.SES_SENDER_EMAIL }} \
+            RecipientEmail=${{ secrets.RECIPIENT_EMAIL }} \
+            DiscordWebhookUrl=${{ secrets.DISCORD_WEBHOOK_URL }}
