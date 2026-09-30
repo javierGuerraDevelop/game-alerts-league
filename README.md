@@ -106,7 +106,27 @@ sequenceDiagram
 └── .github/workflows/ci.yml  # lint, test, template, deploy
 ```
 
-## Riot API key
+## Getting started
+
+Prerequisites:
+
+- Python 3.13 (for local development and tests)
+- [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
+- AWS credentials that can create CloudFormation stacks and IAM roles
+- A Riot API key from [developer.riotgames.com](https://developer.riotgames.com/)
+
+### Configuration parameters
+
+| Parameter | Required | Default | Purpose |
+|---|---|---|---|
+| `RiotApiKeySecretArn` | yes | — | ARN of the Secrets Manager secret that holds the Riot API key |
+| `SesSenderEmail` | yes | — | Verified SES sender identity |
+| `RecipientEmail` | yes | — | Email that receives game notifications and alarms |
+| `DiscordWebhookUrl` | no | `""` | Discord webhook; Discord notifications are skipped when empty |
+| `MatchRegion` | no | `americas` | Regional route for Account-V1 and Match-V5 (`americas`, `europe`, `asia`) |
+| `RiotRegion` | no | `na1` | Platform region for Spectator-V5 (`na1`, `euw1`, `kr`, ...) |
+
+### Riot API key secret
 
 The stack takes only the ARN of a Secrets Manager secret; never put the key itself in
 the template or in `samconfig.toml`.
@@ -128,6 +148,53 @@ aws secretsmanager put-secret-value --secret-id in-game-now-notifications/riot-a
 
 For local development, the `RIOT_API_KEY` environment variable takes precedence over
 Secrets Manager.
+
+### Deploy
+
+```bash
+sam build
+sam deploy --guided
+```
+
+`sam deploy --guided` prompts for the parameters above and saves them to
+`samconfig.toml`, so later deployments are just `sam deploy`. After the first deploy,
+confirm the alarm email subscription from the alarms topic once.
+
+### Seed tracked players
+
+Players are managed directly in DynamoDB. Add one with:
+
+```bash
+aws dynamodb put-item --table-name in-game-now-players \
+  --item '{"playerId":{"S":"Name#TAG"},"gameName":{"S":"Name"},"tagLine":{"S":"TAG"}}'
+```
+
+The sensor picks the player up on its next run and caches the resolved PUUID on the
+item after the first successful lookup.
+
+### Local development
+
+```bash
+python3.13 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+
+make lint      # ruff check + ruff format --check
+make test      # pytest
+make validate  # sam validate --lint
+make build     # sam build
+```
+
+Run a function locally with one of the sample events (Docker required):
+
+```bash
+sam local invoke GetGameStatsFunction --event events/get_game_stats.json
+sam local invoke NotifyWebhooksFunction --event events/notify_webhooks.json
+sam local invoke IsPlayerInGameFunction --event events/is_player_in_game.json
+```
+
+Set `RIOT_API_KEY` (the local fallback), the table names, and the region variables in
+an `env.json` file for local invocations.
 
 ## CI/CD and deployment
 
