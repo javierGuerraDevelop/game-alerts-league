@@ -139,7 +139,7 @@ def collect_stats(
     participant = find_participant(match, match_id, puuid)
     record = build_stats_record(match_id, puuid, match, participant, config.ttl_days)
     store_stats(dynamo_client, config.table_name, record)
-    _LOG.info("stored stats for match %s", match_id)
+    _LOG.info("stored game stats", extra={"matchId": match_id})
 
 
 def lambda_handler(event, context):

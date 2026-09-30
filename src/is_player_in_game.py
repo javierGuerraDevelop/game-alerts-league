@@ -120,7 +120,11 @@ def cache_puuid(
             ExpressionAttributeValues={":p": puuid},
         )
     except Exception as err:  # noqa: BLE001 - caching is best-effort
-        _LOG.warning("failed to cache puuid for player %s: %s", player_id, err)
+        _LOG.warning(
+            "failed to cache puuid: %s",
+            err,
+            extra={"playerId": player_id, "err": str(err)},
+        )
 
 
 def ensure_puuid(
@@ -231,7 +235,11 @@ def write_placeholder(
         )
     except Exception as err:  # noqa: BLE001 - placeholder writes are best-effort
         if aws_error_code(err) != "ConditionalCheckFailedException":
-            _LOG.warning("placeholder write failed for %s: %s", match_id, err)
+            _LOG.warning(
+                "placeholder write failed: %s",
+                err,
+                extra={"matchId": match_id, "err": str(err)},
+            )
 
 
 def process_player(
@@ -248,7 +256,7 @@ def process_player(
 
     active_game = fetch_active_game(puuid, config, http_get=http_get)
     if active_game is None:
-        _LOG.info("player %s is not in a game", player_id)
+        _LOG.info("player not in a game", extra={"playerId": player_id})
         return
 
     match_id = build_match_id(active_game)
@@ -262,13 +270,27 @@ def process_player(
         ),
     }
     if not start_game_execution(sfn_client, config, execution_name, execution_input):
-        _LOG.info("game %s already tracked for player %s", match_id, player_id)
+        _LOG.info(
+            "game already tracked",
+            extra={
+                "playerId": player_id,
+                "matchId": match_id,
+                "executionName": execution_name,
+            },
+        )
         return
 
     write_placeholder(
         dynamo_client, config.stats_table, match_id, puuid, config.ttl_days
     )
-    _LOG.info("started lifecycle for match %s", match_id)
+    _LOG.info(
+        "started game lifecycle",
+        extra={
+            "playerId": player_id,
+            "matchId": match_id,
+            "executionName": execution_name,
+        },
+    )
 
 
 def check_players(
@@ -291,7 +313,11 @@ def check_players(
             process_player(player, config, dynamo_client, sfn_client, http_get=http_get)
         except Exception as err:  # noqa: BLE001 - players are processed independently
             failures += 1
-            _LOG.error("player %s failed: %s", player_id, err)
+            _LOG.error(
+                "player failed: %s",
+                err,
+                extra={"playerId": player_id, "err": str(err)},
+            )
 
     if failures == len(players):
         raise RuntimeError(f"all {len(players)} tracked player(s) failed")
