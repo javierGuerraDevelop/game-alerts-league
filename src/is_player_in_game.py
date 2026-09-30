@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.parse
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -12,11 +13,21 @@ from typing import Any
 
 import boto3
 
-from common import configure_logging, http_get, parse_delay_seconds, require_env
+from common import (
+    aws_error_code,
+    configure_logging,
+    http_get,
+    parse_delay_seconds,
+    require_env,
+)
 
 _LOG = logging.getLogger(__name__)
 
 HttpGet = Callable[..., tuple[int, Mapping[str, str], str]]
+
+MAX_EXECUTION_NAME_LENGTH = 80
+
+_UNSAFE_EXECUTION_NAME_CHARS = re.compile(r"[^A-Za-z0-9_-]")
 
 
 @dataclass(frozen=True)
@@ -120,6 +131,92 @@ def ensure_puuid(
     return puuid
 
 
+def fetch_active_game(
+    puuid: str, config: SensorConfig, *, http_get: HttpGet = http_get
+) -> Mapping[str, Any] | None:
+    """Return the player's active game; 404 means the player is not in a game."""
+    url = (
+        f"https://{config.riot_region}.api.riotgames.com"
+        f"/lol/spectator/v5/active-games/by-summoner/{puuid}"
+    )
+    status, _headers, body = http_get(url, {"X-Riot-Token": config.riot_api_key})
+    if status == 404:
+        return None
+    if status != 200:
+        raise RuntimeError(f"spectator lookup for {puuid} returned {status}: {body}")
+    return json.loads(body)
+
+
+def build_match_id(active_game: Mapping[str, Any]) -> str:
+    """Build the match id from the Spectator game identifiers."""
+    platform_id = str(active_game.get("platformId") or "")
+    game_id = active_game.get("gameId")
+    if not platform_id or game_id is None:
+        raise RuntimeError("spectator response is missing platformId or gameId")
+    return f"{platform_id}_{game_id}"
+
+
+def build_notification(
+    player_name: str, active_game: Mapping[str, Any], puuid: str
+) -> dict[str, Any]:
+    """Build the alert message for a detected game."""
+    champion_id = 0
+    for participant in active_game.get("participants", []):
+        if participant.get("puuid") == puuid:
+            champion_id = participant.get("championId", 0)
+            break
+    return {
+        "playerName": player_name,
+        "gameMode": active_game.get("gameMode", ""),
+        "championId": champion_id,
+        "gameStartTime": active_game.get("gameStartTime", 0),
+    }
+
+
+def build_execution_name(match_id: str, puuid: str) -> str:
+    """Build the deterministic, sanitized Step Functions execution name."""
+    raw_name = f"game-{match_id}-{puuid[:8]}"
+    sanitized = _UNSAFE_EXECUTION_NAME_CHARS.sub("-", raw_name)
+    return sanitized[:MAX_EXECUTION_NAME_LENGTH]
+
+
+def start_game_execution(
+    sfn_client: Any,
+    config: SensorConfig,
+    execution_name: str,
+    execution_input: Mapping[str, Any],
+) -> bool:
+    """Start the lifecycle execution; return False when it already exists."""
+    try:
+        sfn_client.start_execution(
+            stateMachineArn=config.state_machine_arn,
+            name=execution_name,
+            input=json.dumps(execution_input),
+        )
+    except Exception as err:
+        if aws_error_code(err) == "ExecutionAlreadyExists":
+            return False
+        raise
+    return True
+
+
+def write_placeholder(
+    dynamo_client: Any, table_name: str, match_id: str, puuid: str
+) -> None:
+    """Write the best-effort placeholder item; write failures are warnings only."""
+    try:
+        dynamo_client.put_item(
+            TableName=table_name,
+            Item={"matchId": match_id, "puuid": puuid},
+            ConditionExpression=(
+                "attribute_not_exists(matchId) AND attribute_not_exists(puuid)"
+            ),
+        )
+    except Exception as err:  # noqa: BLE001 - placeholder writes are best-effort
+        if aws_error_code(err) != "ConditionalCheckFailedException":
+            _LOG.warning("placeholder write failed for %s: %s", match_id, err)
+
+
 def process_player(
     player: Mapping[str, Any],
     config: SensorConfig,
@@ -128,10 +225,31 @@ def process_player(
     *,
     http_get: HttpGet = http_get,
 ) -> None:
-    """Check a single tracked player."""
+    """Check a tracked player and start the lifecycle when a game is active."""
     player_id = str(player.get("playerId", ""))
-    ensure_puuid(player, config, dynamo_client, http_get=http_get)
-    _LOG.info("checked player %s", player_id)
+    puuid = ensure_puuid(player, config, dynamo_client, http_get=http_get)
+
+    active_game = fetch_active_game(puuid, config, http_get=http_get)
+    if active_game is None:
+        _LOG.info("player %s is not in a game", player_id)
+        return
+
+    match_id = build_match_id(active_game)
+    execution_name = build_execution_name(match_id, puuid)
+    execution_input = {
+        "matchId": match_id,
+        "puuid": puuid,
+        "delaySeconds": config.delay_seconds,
+        "notification": build_notification(
+            str(player.get("gameName", "")), active_game, puuid
+        ),
+    }
+    if not start_game_execution(sfn_client, config, execution_name, execution_input):
+        _LOG.info("game %s already tracked for player %s", match_id, player_id)
+        return
+
+    write_placeholder(dynamo_client, config.stats_table, match_id, puuid)
+    _LOG.info("started lifecycle for match %s", match_id)
 
 
 def check_players(
