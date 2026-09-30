@@ -65,6 +65,18 @@ def require_env(name: str) -> str:
     return value
 
 
+def aws_error_code(err: Exception) -> str:
+    """Extract the AWS error code from a boto3 ClientError-like exception."""
+    response = getattr(err, "response", None)
+    if not isinstance(response, Mapping):
+        return ""
+    error = response.get("Error")
+    if not isinstance(error, Mapping):
+        return ""
+    code = error.get("Code")
+    return code if isinstance(code, str) else ""
+
+
 def parse_delay_seconds(raw: str | None) -> int:
     """Parse GAME_STATS_DELAY_SECONDS, clamping to the allowed range."""
     if raw is None or not raw.strip():
