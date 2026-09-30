@@ -6,6 +6,9 @@ import json
 import logging
 import os
 import sys
+import urllib.error
+import urllib.request
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -109,3 +112,44 @@ def parse_ttl_days(raw: str | None) -> int:
         )
         return DEFAULT_TTL_DAYS
     return value
+
+
+def http_get(
+    url: str,
+    headers: Mapping[str, str] | None = None,
+    timeout: float | None = None,
+) -> tuple[int, Mapping[str, str], str]:
+    """Perform an HTTP GET and return (status, headers, body).
+
+    HTTP error responses are returned instead of raised; transport failures
+    (DNS, connection errors, timeouts) still propagate.
+    """
+    request = urllib.request.Request(url, headers=dict(headers or {}))
+    return _perform(request, timeout)
+
+
+def http_post_json(
+    url: str,
+    payload: Mapping[str, Any],
+    timeout: float | None = None,
+) -> tuple[int, Mapping[str, str], str]:
+    """POST the payload as JSON and return (status, headers, body)."""
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    return _perform(request, timeout)
+
+
+def _perform(
+    request: urllib.request.Request, timeout: float | None
+) -> tuple[int, Mapping[str, str], str]:
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.headers, response.read().decode("utf-8")
+    except urllib.error.HTTPError as err:
+        body = err.read().decode("utf-8", errors="replace")
+        return err.code, err.headers, body
