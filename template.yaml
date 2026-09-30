@@ -26,6 +26,10 @@ Parameters:
       - europe
       - asia
     Description: Regional route for Account-V1 and Match-V5.
+  RiotRegion:
+    Type: String
+    Default: na1
+    Description: Platform region for Spectator-V5 (for example na1, euw1, kr).
 
 Globals:
   Function:
@@ -40,6 +44,18 @@ Resources:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: !Sub "${AWS::StackName}-notifications"
+
+  PlayersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-players"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: playerId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: playerId
+          KeyType: HASH
 
   GameStatsTable:
     Type: AWS::DynamoDB::Table
@@ -56,6 +72,122 @@ Resources:
           KeyType: HASH
         - AttributeName: puuid
           KeyType: RANGE
+
+  StatsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-stats-dlq"
+      MessageRetentionPeriod: 1209600
+
+  GameLifecycleStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub "${AWS::StackName}-game-lifecycle"
+      Type: STANDARD
+      DefinitionSubstitutions:
+        NotificationTopicArn: !Ref NotificationTopic
+        GetGameStatsFunctionArn: !GetAtt GetGameStatsFunction.Arn
+        StatsDeadLetterQueueUrl: !Ref StatsDeadLetterQueue
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: sns:Publish
+              Resource: !Ref NotificationTopic
+        - Statement:
+            - Effect: Allow
+              Action: sqs:SendMessage
+              Resource: !GetAtt StatsDeadLetterQueue.Arn
+        - Statement:
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !GetAtt GetGameStatsFunction.Arn
+      Definition:
+        StartAt: PublishAlert
+        States:
+          PublishAlert:
+            Type: Task
+            Resource: arn:aws:states:::sns:publish
+            Parameters:
+              TopicArn: "${NotificationTopicArn}"
+              Message.$: "States.JsonToString($.notification)"
+            Retry:
+              - ErrorEquals:
+                  - States.TaskFailed
+                IntervalSeconds: 10
+                MaxAttempts: 3
+                BackoffRate: 2.0
+            Catch:
+              - ErrorEquals:
+                  - States.ALL
+                ResultPath: "$.error"
+                Next: SendToDLQ
+            Next: InitialWait
+          InitialWait:
+            Type: Wait
+            SecondsPath: "$.delaySeconds"
+            Next: FetchStats
+          FetchStats:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters:
+              FunctionName: "${GetGameStatsFunctionArn}"
+              Payload.$: "$"
+            OutputPath: "$.Payload"
+            Retry:
+              - ErrorEquals:
+                  - States.TaskFailed
+                IntervalSeconds: 60
+                MaxAttempts: 8
+                BackoffRate: 2.0
+                MaxDelaySeconds: 900
+            Catch:
+              - ErrorEquals:
+                  - States.ALL
+                ResultPath: "$.error"
+                Next: SendToDLQ
+            End: true
+          SendToDLQ:
+            Type: Task
+            Resource: arn:aws:states:::sqs:sendMessage
+            Parameters:
+              QueueUrl: "${StatsDeadLetterQueueUrl}"
+              MessageBody.$: "States.JsonToString($)"
+            Next: StatsFailed
+          StatsFailed:
+            Type: Fail
+            Error: GameStatsCollectionFailed
+            Cause: Stats collection failed after retries; payload sent to the stats DLQ
+
+  IsPlayerInGameFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: is_player_in_game.lambda_handler
+      Timeout: 30
+      Environment:
+        Variables:
+          PLAYERS_TABLE_NAME: !Ref PlayersTable
+          DYNAMO_TABLE_NAME: !Ref GameStatsTable
+          STATE_MACHINE_ARN: !Ref GameLifecycleStateMachine
+          RIOT_API_KEY: !Ref RiotApiKey
+          RIOT_REGION: !Ref RiotRegion
+          MATCH_REGION: !Ref MatchRegion
+          GAME_STATS_DELAY_SECONDS: "3600"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PlayersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GameStatsTable
+        - Statement:
+            - Effect: Allow
+              Action: states:StartExecution
+              Resource: !Ref GameLifecycleStateMachine
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Enabled: true
 
   NotifyWebhooksFunction:
     Type: AWS::Serverless::Function
