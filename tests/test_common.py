@@ -16,7 +16,25 @@ from common import (
     parse_delay_seconds,
     parse_ttl_days,
     require_env,
+    resolve_riot_api_key,
 )
+
+
+class FakeSecrets:
+    """Secrets Manager client double returning a canned secret."""
+
+    def __init__(
+        self, secret: str | None = None, error: Exception | None = None
+    ) -> None:
+        self.secret = secret
+        self.error = error
+        self.calls: list[dict] = []
+
+    def get_secret_value(self, **kwargs: object) -> dict:
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return {"SecretString": self.secret}
 
 
 def make_record(message: str = "hello", **extra: object) -> logging.LogRecord:
@@ -177,3 +195,52 @@ def test_parse_ttl_days_non_positive_uses_default(
 
     assert caplog.records
     assert "STATS_TTL_DAYS" in caplog.records[0].message
+
+
+def test_resolve_riot_api_key_prefers_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIOT_API_KEY", "env-key")
+    client = FakeSecrets(secret="secret-key")
+
+    assert resolve_riot_api_key(client, "arn:aws:secretsmanager:test") == "env-key"
+    assert client.calls == []
+
+
+def test_resolve_riot_api_key_reads_and_trims_the_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIOT_API_KEY", raising=False)
+    client = FakeSecrets(secret="  secret-key\n")
+
+    assert resolve_riot_api_key(client, "arn:aws:secretsmanager:test") == "secret-key"
+    assert client.calls == [{"SecretId": "arn:aws:secretsmanager:test"}]
+
+
+def test_resolve_riot_api_key_propagates_client_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIOT_API_KEY", raising=False)
+    client = FakeSecrets(error=RuntimeError("access denied"))
+
+    with pytest.raises(RuntimeError, match="access denied"):
+        resolve_riot_api_key(client, "arn:aws:secretsmanager:test")
+
+
+def test_resolve_riot_api_key_rejects_an_empty_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIOT_API_KEY", raising=False)
+    client = FakeSecrets(secret="   ")
+
+    with pytest.raises(RuntimeError, match="arn:aws:secretsmanager:test"):
+        resolve_riot_api_key(client, "arn:aws:secretsmanager:test")
+
+
+def test_resolve_riot_api_key_requires_an_arn_without_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RIOT_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="RIOT_API_KEY_SECRET_ARN"):
+        resolve_riot_api_key(FakeSecrets(), "")

@@ -7,4 +7,4 @@ region = "us-east-1"
 [default.deploy.parameters]
 resolve_s3 = true
 capabilities = "CAPABILITY_IAM"
-parameter_overrides = "RiotApiKey=\"CHANGE_ME\" SesSenderEmail=\"CHANGE_ME\" RecipientEmail=\"CHANGE_ME\""
+parameter_overrides = "RiotApiKeySecretArn=\"CHANGE_ME\" SesSenderEmail=\"CHANGE_ME\" RecipientEmail=\"CHANGE_ME\""

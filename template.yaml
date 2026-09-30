@@ -3,10 +3,9 @@ Transform: AWS::Serverless-2016-10-31
 Description: Trolling Time - League of Legends game alerts and post-game stats.
 
 Parameters:
-  RiotApiKey:
+  RiotApiKeySecretArn:
     Type: String
-    NoEcho: true
-    Description: Riot API key used to call the Riot APIs.
+    Description: ARN of the Secrets Manager secret that holds the Riot API key.
   SesSenderEmail:
     Type: String
     Description: Verified SES identity used as the notification sender.
@@ -169,7 +168,7 @@ Resources:
           PLAYERS_TABLE_NAME: !Ref PlayersTable
           DYNAMO_TABLE_NAME: !Ref GameStatsTable
           STATE_MACHINE_ARN: !Ref GameLifecycleStateMachine
-          RIOT_API_KEY: !Ref RiotApiKey
+          RIOT_API_KEY_SECRET_ARN: !Ref RiotApiKeySecretArn
           RIOT_REGION: !Ref RiotRegion
           MATCH_REGION: !Ref MatchRegion
           GAME_STATS_DELAY_SECONDS: "3600"
@@ -178,6 +177,10 @@ Resources:
             TableName: !Ref PlayersTable
         - DynamoDBCrudPolicy:
             TableName: !Ref GameStatsTable
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref RiotApiKeySecretArn
         - Statement:
             - Effect: Allow
               Action: states:StartExecution
@@ -219,7 +222,11 @@ Resources:
         Variables:
           MATCH_REGION: !Ref MatchRegion
           DYNAMO_TABLE_NAME: !Ref GameStatsTable
-          RIOT_API_KEY: !Ref RiotApiKey
+          RIOT_API_KEY_SECRET_ARN: !Ref RiotApiKeySecretArn
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref GameStatsTable
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref RiotApiKeySecretArn

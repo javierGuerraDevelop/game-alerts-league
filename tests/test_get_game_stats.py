@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from common import RateLimitedError
 from get_game_stats import StatsConfig, collect_stats
 
 MATCH = {
@@ -102,14 +103,20 @@ class FakeDynamo:
 class FakeHttp:
     """HTTP getter double returning a canned (status, headers, body) result."""
 
-    def __init__(self, status: int = 200, body: str = "") -> None:
+    def __init__(
+        self,
+        status: int = 200,
+        body: str = "",
+        response_headers: dict | None = None,
+    ) -> None:
         self.status = status
         self.body = body
+        self.response_headers = response_headers or {}
         self.calls: list[dict] = []
 
     def __call__(self, url: str, headers=None, timeout=None):
         self.calls.append({"url": url, "headers": headers, "timeout": timeout})
-        return self.status, {}, self.body
+        return self.status, self.response_headers, self.body
 
 
 def make_config() -> StatsConfig:
@@ -151,6 +158,7 @@ def test_match_request_targets_the_regional_route() -> None:
         "https://americas.api.riotgames.com/lol/match/v5/matches/NA1_12345"
     )
     assert http.calls[0]["headers"]["X-Riot-Token"] == "test-api-key"
+    assert http.calls[0]["timeout"] == 8
 
 
 def test_unknown_event_fields_are_ignored() -> None:
@@ -200,10 +208,35 @@ def test_missing_event_fields_raise(event: dict) -> None:
         collect_stats(event, make_config(), FakeDynamo(), http_get=FakeHttp())
 
 
-def test_non_200_match_response_raises() -> None:
-    http = FakeHttp(status=404, body="match not found")
+@pytest.mark.parametrize("status", [404, 500])
+def test_non_200_match_response_raises(status: int) -> None:
+    http = FakeHttp(status=status, body="boom")
 
-    with pytest.raises(RuntimeError, match="404"):
+    with pytest.raises(RuntimeError, match=str(status)):
+        collect_stats(
+            {"matchId": "NA1_12345", "puuid": "test-puuid"},
+            make_config(),
+            FakeDynamo(),
+            http_get=http,
+        )
+
+
+def test_match_403_mentions_rotating_the_secret() -> None:
+    http = FakeHttp(status=403, body="forbidden")
+
+    with pytest.raises(RuntimeError, match="rotate"):
+        collect_stats(
+            {"matchId": "NA1_12345", "puuid": "test-puuid"},
+            make_config(),
+            FakeDynamo(),
+            http_get=http,
+        )
+
+
+def test_match_429_is_rate_limited_with_retry_after() -> None:
+    http = FakeHttp(status=429, body="slow down", response_headers={"Retry-After": "5"})
+
+    with pytest.raises(RateLimitedError, match="retry-after=5"):
         collect_stats(
             {"matchId": "NA1_12345", "puuid": "test-puuid"},
             make_config(),

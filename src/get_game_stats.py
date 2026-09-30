@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 import boto3
 
-from common import configure_logging, http_get, require_env
+from common import (
+    RIOT_TIMEOUT_SECONDS,
+    configure_logging,
+    http_get,
+    require_env,
+    resolve_riot_api_key,
+    riot_api_error,
+)
 
 _LOG = logging.getLogger(__name__)
 
@@ -26,12 +34,14 @@ class StatsConfig:
     riot_api_key: str
 
 
-def load_config() -> StatsConfig:
+def load_config(secrets_client: Any) -> StatsConfig:
     """Load and validate the collector configuration from the environment."""
     return StatsConfig(
         match_region=require_env("MATCH_REGION"),
         table_name=require_env("DYNAMO_TABLE_NAME"),
-        riot_api_key=require_env("RIOT_API_KEY"),
+        riot_api_key=resolve_riot_api_key(
+            secrets_client, os.environ.get("RIOT_API_KEY_SECRET_ARN", "").strip()
+        ),
     )
 
 
@@ -44,9 +54,11 @@ def fetch_match(
 ) -> Mapping[str, Any]:
     """Fetch a match from Match-V5; any non-200 response is an error."""
     url = f"https://{match_region}.api.riotgames.com/lol/match/v5/matches/{match_id}"
-    status, _headers, body = http_get(url, {"X-Riot-Token": api_key})
+    status, headers, body = http_get(
+        url, {"X-Riot-Token": api_key}, timeout=RIOT_TIMEOUT_SECONDS
+    )
     if status != 200:
-        raise RuntimeError(f"match {match_id} fetch returned {status}: {body}")
+        raise riot_api_error(f"match fetch for {match_id}", status, headers, body)
     return json.loads(body)
 
 
@@ -127,5 +139,5 @@ def collect_stats(
 def lambda_handler(event, context):
     """Lambda entry point: build real clients and configuration."""
     configure_logging()
-    config = load_config()
+    config = load_config(boto3.client("secretsmanager"))
     collect_stats(event, config, boto3.client("dynamodb"))
