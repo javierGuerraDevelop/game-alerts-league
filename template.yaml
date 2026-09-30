@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: Trolling Time - League of Legends game alerts and post-game stats.
+Description: In Game Now Notifications - League of Legends game alerts and post-game stats.
 
 Parameters:
   RiotApiKeySecretArn:

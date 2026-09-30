@@ -1,7 +1,7 @@
 version = 0.1
 
 [default.global.parameters]
-stack_name = "trolling-time"
+stack_name = "in-game-now"
 region = "us-east-1"
 
 [default.deploy.parameters]
