@@ -1,6 +1,5 @@
 # In Game Now Notifications
 
-[![CI](https://github.com/javierGuerraDevelop/in-game-now-notifications/actions/workflows/ci.yml/badge.svg)](https://github.com/javierGuerraDevelop/in-game-now-notifications/actions/workflows/ci.yml)
 ![Python 3.13](https://img.shields.io/badge/python-3.13-blue)
 ![AWS SAM](https://img.shields.io/badge/AWS-SAM-orange)
 ![License: GPL v2](https://img.shields.io/badge/license-GPLv2-blue)
