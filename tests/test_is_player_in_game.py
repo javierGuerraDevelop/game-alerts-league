@@ -7,7 +7,9 @@ import pytest
 
 from is_player_in_game import (
     SensorConfig,
+    build_execution_name,
     cache_puuid,
+    check_players,
     ensure_puuid,
     load_config,
     resolve_puuid,
@@ -94,6 +96,52 @@ def set_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setenv("RIOT_API_KEY", "test-api-key")
     monkeypatch.setenv("MATCH_REGION", "americas")
+
+
+class FakeSfn:
+    """Step Functions client double recording start_execution calls."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.calls: list[dict] = []
+
+    def start_execution(self, **kwargs: object) -> None:
+        if self.error is not None:
+            raise self.error
+        self.calls.append(kwargs)
+
+
+class FakeAwsError(Exception):
+    """boto3-style error carrying an AWS error code in .response."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.response = {"Error": {"Code": code}}
+
+
+PLAYER = {
+    "playerId": "Player#NA1",
+    "gameName": "Player",
+    "tagLine": "NA1",
+    "puuid": "player-puuid",
+}
+
+
+def active_game(puuid: str = "player-puuid") -> dict:
+    return {
+        "gameId": 12345,
+        "platformId": "NA1",
+        "gameMode": "CLASSIC",
+        "gameStartTime": 1700000000000,
+        "participants": [
+            {"puuid": "someone-else", "championId": 1},
+            {"puuid": puuid, "championId": 99},
+        ],
+    }
+
+
+def spectator_active(game: dict) -> dict:
+    return {"spectator/v5": (200, {}, json.dumps(game))}
 
 
 def test_load_config_requires_core_variables(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -249,3 +297,183 @@ def test_ensure_puuid_uses_the_cached_value() -> None:
     assert puuid == "cached-puuid"
     assert http.calls == []
     assert dynamo.update_calls == []
+
+
+def test_player_not_in_game_starts_no_execution() -> None:
+    dynamo = FakeDynamo(pages=[{"Items": [PLAYER]}])
+    sfn = FakeSfn()
+
+    check_players(make_config(), dynamo, sfn, http_get=FakeHttp())
+
+    assert sfn.calls == []
+    assert dynamo.put_calls == []
+
+
+def test_detection_starts_execution_with_expected_name_and_input() -> None:
+    dynamo = FakeDynamo(pages=[{"Items": [PLAYER]}])
+    sfn = FakeSfn()
+    http = FakeHttp(responses=spectator_active(active_game()))
+
+    check_players(make_config(delay_seconds=1800), dynamo, sfn, http_get=http)
+
+    assert len(sfn.calls) == 1
+    call = sfn.calls[0]
+    assert call["stateMachineArn"] == (
+        "arn:aws:states:us-east-1:123456789012:"
+        "stateMachine:trolling-time-game-lifecycle"
+    )
+    assert call["name"] == "game-NA1_12345-player-p"
+    assert json.loads(call["input"]) == {
+        "matchId": "NA1_12345",
+        "puuid": "player-puuid",
+        "delaySeconds": 1800,
+        "notification": {
+            "playerName": "Player",
+            "gameMode": "CLASSIC",
+            "championId": 99,
+            "gameStartTime": 1700000000000,
+        },
+    }
+
+
+def test_detection_writes_a_conditional_placeholder() -> None:
+    dynamo = FakeDynamo(pages=[{"Items": [PLAYER]}])
+    http = FakeHttp(responses=spectator_active(active_game()))
+
+    check_players(make_config(), dynamo, FakeSfn(), http_get=http)
+
+    assert dynamo.put_calls == [
+        {
+            "TableName": "game-stats",
+            "Item": {"matchId": "NA1_12345", "puuid": "player-puuid"},
+            "ConditionExpression": (
+                "attribute_not_exists(matchId) AND attribute_not_exists(puuid)"
+            ),
+        }
+    ]
+
+
+def test_notification_defaults_champion_id_when_player_is_absent() -> None:
+    game = active_game()
+    game["participants"] = [{"puuid": "someone-else", "championId": 1}]
+    dynamo = FakeDynamo(pages=[{"Items": [PLAYER]}])
+    sfn = FakeSfn()
+
+    check_players(
+        make_config(), dynamo, sfn, http_get=FakeHttp(responses=spectator_active(game))
+    )
+
+    notification = json.loads(sfn.calls[0]["input"])["notification"]
+    assert notification["championId"] == 0
+
+
+def test_delay_seconds_from_environment_reaches_execution_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_required_env(monkeypatch)
+    monkeypatch.setenv("GAME_STATS_DELAY_SECONDS", "1800")
+    dynamo = FakeDynamo(pages=[{"Items": [PLAYER]}])
+    sfn = FakeSfn()
+    http = FakeHttp(responses=spectator_active(active_game()))
+
+    check_players(load_config(), dynamo, sfn, http_get=http)
+
+    assert json.loads(sfn.calls[0]["input"])["delaySeconds"] == 1800
+
+
+def test_execution_name_sanitizes_special_characters() -> None:
+    name = build_execution_name("NA1 1/2#x", "abcdefgh-rest")
+
+    assert name == "game-NA1-1-2-x-abcdefgh"
+
+
+def test_execution_name_is_truncated_to_80_characters() -> None:
+    name = build_execution_name("x" * 200, "abcdefgh")
+
+    assert len(name) == 80
+    assert name.startswith("game-")
+
+
+def test_already_tracked_is_success_and_skips_placeholder() -> None:
+    dynamo = FakeDynamo(pages=[{"Items": [PLAYER]}])
+    sfn = FakeSfn(error=FakeAwsError("ExecutionAlreadyExists"))
+    http = FakeHttp(responses=spectator_active(active_game()))
+
+    check_players(make_config(), dynamo, sfn, http_get=http)
+
+    assert dynamo.put_calls == []
+
+
+def test_conditional_check_failure_is_success() -> None:
+    dynamo = FakeDynamo(
+        pages=[{"Items": [PLAYER]}],
+        put_error=FakeAwsError("ConditionalCheckFailedException"),
+    )
+    sfn = FakeSfn()
+    http = FakeHttp(responses=spectator_active(active_game()))
+
+    check_players(make_config(), dynamo, sfn, http_get=http)
+
+    assert len(sfn.calls) == 1
+
+
+def test_placeholder_write_failure_is_warning_only(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    dynamo = FakeDynamo(
+        pages=[{"Items": [PLAYER]}], put_error=RuntimeError("dynamo down")
+    )
+    sfn = FakeSfn()
+    http = FakeHttp(responses=spectator_active(active_game()))
+
+    with caplog.at_level(logging.WARNING):
+        check_players(make_config(), dynamo, sfn, http_get=http)
+
+    assert len(sfn.calls) == 1
+    assert any("placeholder" in record.message.lower() for record in caplog.records)
+
+
+def test_start_execution_failure_fails_the_only_player() -> None:
+    dynamo = FakeDynamo(pages=[{"Items": [PLAYER]}])
+    sfn = FakeSfn(error=RuntimeError("step functions down"))
+    http = FakeHttp(responses=spectator_active(active_game()))
+
+    with pytest.raises(RuntimeError, match="all 1 tracked player"):
+        check_players(make_config(), dynamo, sfn, http_get=http)
+
+
+def test_spectator_non_200_fails_the_only_player(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    dynamo = FakeDynamo(pages=[{"Items": [PLAYER]}])
+    http = FakeHttp(responses={"spectator/v5": (500, {}, "boom")})
+
+    with (
+        caplog.at_level(logging.ERROR),
+        pytest.raises(RuntimeError, match="all 1 tracked player"),
+    ):
+        check_players(make_config(), dynamo, FakeSfn(), http_get=http)
+
+    assert any("500" in record.message for record in caplog.records)
+
+
+def test_partial_failure_succeeds_when_one_player_works() -> None:
+    bad_player = {
+        "playerId": "Bad#1",
+        "gameName": "Bad",
+        "tagLine": "1",
+        "puuid": "bad-puuid",
+    }
+    dynamo = FakeDynamo(pages=[{"Items": [bad_player, PLAYER]}])
+    sfn = FakeSfn()
+    http = FakeHttp(
+        responses={
+            "spectator/v5/active-games/by-summoner/bad-puuid": (500, {}, "boom"),
+            "spectator/v5": (200, {}, json.dumps(active_game())),
+        }
+    )
+
+    check_players(make_config(), dynamo, sfn, http_get=http)
+
+    assert len(sfn.calls) == 1
+    assert json.loads(sfn.calls[0]["input"])["puuid"] == "player-puuid"
