@@ -34,3 +34,16 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Run tests
         run: pytest -q
+
+  template:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - uses: aws-actions/setup-sam@v3
+      - name: Validate template
+        run: sam validate --lint
+      - name: Build
+        run: sam build
