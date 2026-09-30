@@ -82,6 +82,11 @@ Resources:
       QueueName: !Sub "${AWS::StackName}-stats-dlq"
       MessageRetentionPeriod: 1209600
 
+  DetectionDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-detection-dlq"
+
   GameLifecycleStateMachine:
     Type: AWS::Serverless::StateMachine
     Properties:
@@ -192,6 +197,13 @@ Resources:
             - Effect: Allow
               Action: states:StartExecution
               Resource: !Ref GameLifecycleStateMachine
+        - Statement:
+            - Effect: Allow
+              Action: sqs:SendMessage
+              Resource: !GetAtt DetectionDeadLetterQueue.Arn
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt DetectionDeadLetterQueue.Arn
       Events:
         Schedule:
           Type: Schedule
