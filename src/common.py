@@ -9,7 +9,7 @@ import sys
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 DEFAULT_DELAY_SECONDS = 3600
@@ -141,6 +141,11 @@ def parse_ttl_days(raw: str | None) -> int:
         )
         return DEFAULT_TTL_DAYS
     return value
+
+
+def expires_at_epoch(ttl_days: int) -> int:
+    """Unix epoch seconds at which a record created now should expire."""
+    return int((datetime.now(tz=UTC) + timedelta(days=ttl_days)).timestamp())
 
 
 class RateLimitedError(Exception):

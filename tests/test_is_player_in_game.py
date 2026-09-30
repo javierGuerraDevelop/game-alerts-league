@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 
 import pytest
 
@@ -85,6 +86,7 @@ def make_config(**overrides: object) -> SensorConfig:
         "riot_region": "na1",
         "match_region": "americas",
         "delay_seconds": 3600,
+        "ttl_days": 30,
     }
     values.update(overrides)
     return SensorConfig(**values)
@@ -166,6 +168,7 @@ def test_load_config_applies_region_and_delay_defaults(
     set_required_env(monkeypatch)
     monkeypatch.delenv("RIOT_REGION", raising=False)
     monkeypatch.delenv("GAME_STATS_DELAY_SECONDS", raising=False)
+    monkeypatch.delenv("STATS_TTL_DAYS", raising=False)
 
     config = load_config(None)
 
@@ -173,6 +176,14 @@ def test_load_config_applies_region_and_delay_defaults(
     assert config.match_region == "americas"
     assert config.riot_region == "na1"
     assert config.delay_seconds == 3600
+    assert config.ttl_days == 30
+
+
+def test_load_config_reads_stats_ttl_days(monkeypatch: pytest.MonkeyPatch) -> None:
+    set_required_env(monkeypatch)
+    monkeypatch.setenv("STATS_TTL_DAYS", "7")
+
+    assert load_config(None).ttl_days == 7
 
 
 def test_load_config_clamps_too_small_delay(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -342,18 +353,33 @@ def test_detection_starts_execution_with_expected_name_and_input() -> None:
 def test_detection_writes_a_conditional_placeholder() -> None:
     dynamo = FakeDynamo(pages=[{"Items": [PLAYER]}])
     http = FakeHttp(responses=spectator_active(active_game()))
+    before = time.time()
 
     check_players(make_config(), dynamo, FakeSfn(), http_get=http)
 
-    assert dynamo.put_calls == [
-        {
-            "TableName": "game-stats",
-            "Item": {"matchId": "NA1_12345", "puuid": "player-puuid"},
-            "ConditionExpression": (
-                "attribute_not_exists(matchId) AND attribute_not_exists(puuid)"
-            ),
-        }
-    ]
+    after = time.time()
+    assert len(dynamo.put_calls) == 1
+    call = dynamo.put_calls[0]
+    assert call["TableName"] == "game-stats"
+    assert call["ConditionExpression"] == (
+        "attribute_not_exists(matchId) AND attribute_not_exists(puuid)"
+    )
+    item = call["Item"]
+    assert item["matchId"] == "NA1_12345"
+    assert item["puuid"] == "player-puuid"
+    assert before + 29 * 86400 <= item["expiresAt"] <= after + 31 * 86400
+
+
+def test_placeholder_expiry_uses_the_configured_ttl_days() -> None:
+    dynamo = FakeDynamo(pages=[{"Items": [PLAYER]}])
+    http = FakeHttp(responses=spectator_active(active_game()))
+    before = time.time()
+
+    check_players(make_config(ttl_days=7), dynamo, FakeSfn(), http_get=http)
+
+    after = time.time()
+    expires_at = dynamo.put_calls[0]["Item"]["expiresAt"]
+    assert before + 6 * 86400 <= expires_at <= after + 8 * 86400
 
 
 def test_notification_defaults_champion_id_when_player_is_absent() -> None:

@@ -17,8 +17,10 @@ from common import (
     RIOT_TIMEOUT_SECONDS,
     aws_error_code,
     configure_logging,
+    expires_at_epoch,
     http_get,
     parse_delay_seconds,
+    parse_ttl_days,
     require_env,
     resolve_riot_api_key,
     riot_api_error,
@@ -44,6 +46,7 @@ class SensorConfig:
     riot_region: str
     match_region: str
     delay_seconds: int
+    ttl_days: int
 
 
 def load_config(secrets_client: Any) -> SensorConfig:
@@ -58,6 +61,7 @@ def load_config(secrets_client: Any) -> SensorConfig:
         riot_region=os.environ.get("RIOT_REGION", "").strip() or "na1",
         match_region=require_env("MATCH_REGION"),
         delay_seconds=parse_delay_seconds(os.environ.get("GAME_STATS_DELAY_SECONDS")),
+        ttl_days=parse_ttl_days(os.environ.get("STATS_TTL_DAYS")),
     )
 
 
@@ -210,13 +214,17 @@ def start_game_execution(
 
 
 def write_placeholder(
-    dynamo_client: Any, table_name: str, match_id: str, puuid: str
+    dynamo_client: Any, table_name: str, match_id: str, puuid: str, ttl_days: int
 ) -> None:
     """Write the best-effort placeholder item; write failures are warnings only."""
     try:
         dynamo_client.put_item(
             TableName=table_name,
-            Item={"matchId": match_id, "puuid": puuid},
+            Item={
+                "matchId": match_id,
+                "puuid": puuid,
+                "expiresAt": expires_at_epoch(ttl_days),
+            },
             ConditionExpression=(
                 "attribute_not_exists(matchId) AND attribute_not_exists(puuid)"
             ),
@@ -257,7 +265,9 @@ def process_player(
         _LOG.info("game %s already tracked for player %s", match_id, player_id)
         return
 
-    write_placeholder(dynamo_client, config.stats_table, match_id, puuid)
+    write_placeholder(
+        dynamo_client, config.stats_table, match_id, puuid, config.ttl_days
+    )
     _LOG.info("started lifecycle for match %s", match_id)
 
 

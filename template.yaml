@@ -71,6 +71,9 @@ Resources:
           KeyType: HASH
         - AttributeName: puuid
           KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
 
   StatsDeadLetterQueue:
     Type: AWS::SQS::Queue
@@ -172,6 +175,7 @@ Resources:
           RIOT_REGION: !Ref RiotRegion
           MATCH_REGION: !Ref MatchRegion
           GAME_STATS_DELAY_SECONDS: "3600"
+          STATS_TTL_DAYS: "30"
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref PlayersTable
@@ -223,6 +227,7 @@ Resources:
           MATCH_REGION: !Ref MatchRegion
           DYNAMO_TABLE_NAME: !Ref GameStatsTable
           RIOT_API_KEY_SECRET_ARN: !Ref RiotApiKeySecretArn
+          STATS_TTL_DAYS: "30"
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref GameStatsTable
