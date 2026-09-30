@@ -37,6 +37,7 @@ Globals:
       - arm64
     Timeout: 10
     MemorySize: 128
+    Tracing: Active
 
 Resources:
   NotificationTopic:
@@ -86,6 +87,8 @@ Resources:
     Properties:
       Name: !Sub "${AWS::StackName}-game-lifecycle"
       Type: STANDARD
+      Tracing:
+        Enabled: true
       DefinitionSubstitutions:
         NotificationTopicArn: !Ref NotificationTopic
         GetGameStatsFunctionArn: !GetAtt GetGameStatsFunction.Arn
