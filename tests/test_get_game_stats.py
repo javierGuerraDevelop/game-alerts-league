@@ -6,7 +6,7 @@ import time
 import pytest
 
 from common import RateLimitedError
-from get_game_stats import StatsConfig, collect_stats
+from get_game_stats import StatsConfig, collect_stats, load_config
 
 MATCH = {
     "metadata": {"matchId": "NA1_12345"},
@@ -127,6 +127,28 @@ def make_config() -> StatsConfig:
         riot_api_key="test-api-key",
         ttl_days=30,
     )
+
+
+def test_load_config_reads_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MATCH_REGION", "europe")
+    monkeypatch.setenv("DYNAMO_TABLE_NAME", "game-stats")
+    monkeypatch.setenv("RIOT_API_KEY", "env-key")
+    monkeypatch.setenv("STATS_TTL_DAYS", "7")
+    monkeypatch.delenv("RIOT_API_KEY_SECRET_ARN", raising=False)
+
+    config = load_config(None)
+
+    assert config.match_region == "europe"
+    assert config.table_name == "game-stats"
+    assert config.riot_api_key == "env-key"
+    assert config.ttl_days == 7
+
+
+def test_load_config_requires_match_region(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MATCH_REGION", raising=False)
+
+    with pytest.raises(RuntimeError, match="MATCH_REGION"):
+        load_config(None)
 
 
 def test_success_persists_all_fields() -> None:

@@ -313,6 +313,17 @@ def test_ensure_puuid_uses_the_cached_value() -> None:
     assert dynamo.update_calls == []
 
 
+def test_no_tracked_players_is_success() -> None:
+    dynamo = FakeDynamo(pages=[{"Items": []}])
+    sfn = FakeSfn()
+
+    check_players(make_config(), dynamo, sfn, http_get=FakeHttp())
+
+    assert sfn.calls == []
+    assert dynamo.update_calls == []
+    assert dynamo.put_calls == []
+
+
 def test_player_not_in_game_starts_no_execution() -> None:
     dynamo = FakeDynamo(pages=[{"Items": [PLAYER]}])
     sfn = FakeSfn()
@@ -513,6 +524,14 @@ def test_account_403_mentions_rotating_the_secret() -> None:
     player = {"playerId": "Player#NA1", "gameName": "Player", "tagLine": "NA1"}
 
     with pytest.raises(RuntimeError, match="rotate"):
+        resolve_puuid(player, make_config(), http_get=http)
+
+
+def test_account_404_is_an_error() -> None:
+    http = FakeHttp(responses={"account/v1": (404, {}, "not found")})
+    player = {"playerId": "Player#NA1", "gameName": "Player", "tagLine": "NA1"}
+
+    with pytest.raises(RuntimeError, match="404"):
         resolve_puuid(player, make_config(), http_get=http)
 
 
