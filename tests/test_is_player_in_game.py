@@ -5,12 +5,14 @@ import logging
 
 import pytest
 
+from common import RateLimitedError
 from is_player_in_game import (
     SensorConfig,
     build_execution_name,
     cache_puuid,
     check_players,
     ensure_puuid,
+    fetch_active_game,
     load_config,
     resolve_puuid,
     scan_players,
@@ -214,6 +216,7 @@ def test_resolve_puuid_calls_the_account_api() -> None:
         "accounts/by-riot-id/Player/NA1"
     )
     assert http.calls[0]["headers"]["X-Riot-Token"] == "test-api-key"
+    assert http.calls[0]["timeout"] == 8
 
 
 def test_resolve_puuid_percent_encodes_name_and_tag() -> None:
@@ -477,3 +480,51 @@ def test_partial_failure_succeeds_when_one_player_works() -> None:
 
     assert len(sfn.calls) == 1
     assert json.loads(sfn.calls[0]["input"])["puuid"] == "player-puuid"
+
+
+def test_account_403_mentions_rotating_the_secret() -> None:
+    http = FakeHttp(responses={"account/v1": (403, {}, "forbidden")})
+    player = {"playerId": "Player#NA1", "gameName": "Player", "tagLine": "NA1"}
+
+    with pytest.raises(RuntimeError, match="rotate"):
+        resolve_puuid(player, make_config(), http_get=http)
+
+
+def test_account_429_is_rate_limited_with_retry_after() -> None:
+    http = FakeHttp(responses={"account/v1": (429, {"Retry-After": "17"}, "slow")})
+    player = {"playerId": "Player#NA1", "gameName": "Player", "tagLine": "NA1"}
+
+    with pytest.raises(RateLimitedError, match="retry-after=17"):
+        resolve_puuid(player, make_config(), http_get=http)
+
+
+def test_spectator_404_returns_none() -> None:
+    http = FakeHttp(responses={"spectator/v5": (404, {}, "")})
+
+    assert fetch_active_game("player-puuid", make_config(), http_get=http) is None
+
+
+def test_spectator_request_uses_the_platform_region_and_timeout() -> None:
+    http = FakeHttp(responses=spectator_active(active_game()))
+
+    fetch_active_game("player-puuid", make_config(riot_region="euw1"), http_get=http)
+
+    assert http.calls[0]["url"] == (
+        "https://euw1.api.riotgames.com/lol/spectator/v5/"
+        "active-games/by-summoner/player-puuid"
+    )
+    assert http.calls[0]["timeout"] == 8
+
+
+def test_spectator_403_mentions_rotating_the_secret() -> None:
+    http = FakeHttp(responses={"spectator/v5": (403, {}, "forbidden")})
+
+    with pytest.raises(RuntimeError, match="rotate"):
+        fetch_active_game("player-puuid", make_config(), http_get=http)
+
+
+def test_spectator_429_is_rate_limited_with_retry_after() -> None:
+    http = FakeHttp(responses={"spectator/v5": (429, {"Retry-After": "3"}, "slow")})
+
+    with pytest.raises(RateLimitedError, match="retry-after=3"):
+        fetch_active_game("player-puuid", make_config(), http_get=http)
