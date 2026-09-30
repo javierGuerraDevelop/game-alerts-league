@@ -196,6 +196,74 @@ sam local invoke IsPlayerInGameFunction --event events/is_player_in_game.json
 Set `RIOT_API_KEY` (the local fallback), the table names, and the region variables in
 an `env.json` file for local invocations.
 
+## Operations
+
+### Alarms
+
+All alarms publish to the alarms topic and email `RecipientEmail`. They use
+`TreatMissingData: notBreaching`, so they only fire on real activity:
+
+| Alarm | Metric | Fires when |
+|---|---|---|
+| `DetectionLambdaErrorsAlarm` | `AWS/Lambda` `Errors` for the sensor | any error in a 5-minute period |
+| `DetectionDLQAlarm` | `AWS/SQS` `ApproximateNumberOfMessagesVisible` for the detection DLQ | any visible message in a 5-minute period |
+| `StatsDLQAlarm` | `AWS/SQS` `ApproximateNumberOfMessagesVisible` for the stats DLQ | any visible message in a 5-minute period |
+| `StateMachineFailuresAlarm` | `AWS/States` `ExecutionsFailed` | any failed execution in a 5-minute period |
+
+### Inspecting dead-letter queues
+
+Messages in a dead-letter queue carry the full invocation or execution payload, so you
+can replay them after fixing the cause:
+
+```bash
+aws sqs get-queue-url --queue-name in-game-now-stats-dlq
+aws sqs receive-message --queue-url <queue-url> --max-number-of-messages 10
+```
+
+The detection DLQ holds asynchronous sensor invocations that failed; the stats DLQ
+holds game payloads whose stats collection failed after all retries.
+
+### Rotating the Riot API key
+
+Riot development keys expire every 24 hours, and production keys can be rotated on
+demand. Update the secret value — no redeploy is needed:
+
+```bash
+aws secretsmanager put-secret-value --secret-id in-game-now-notifications/riot-api-key \
+  --secret-string "$RIOT_API_KEY"
+```
+
+Functions read the secret at startup, so the next cold start picks up the new value.
+
+### Record expiry
+
+Both the placeholder and the full stats record carry `expiresAt`, and the game stats
+table has DynamoDB TTL enabled on it. DynamoDB deletes expired items automatically,
+typically within 48 hours after expiry. Tune the retention with the `STATS_TTL_DAYS`
+value in `template.yaml` (default 30 days).
+
+### Cost notes
+
+For a handful of tracked players the workload stays within the AWS free tier:
+
+- **Lambda** — one short invocation every 5 minutes, plus a few per detected game.
+- **Step Functions** (Standard) — one execution per detected game; waits are free and
+  only state transitions are billed.
+- **DynamoDB** — on-demand billing for tiny items; TTL deletes are free.
+- **SNS, SQS, SES** — negligible traffic at this scale.
+- **CloudWatch and X-Ray** — alarms and traces are the main variable cost; lower the
+  X-Ray sampling rate or the log retention if you want to be strict about it.
+
+## Troubleshooting
+
+| Symptom | Likely cause | What to do |
+|---|---|---|
+| Account lookups return `403` and read "API key may be expired" | A Riot development key is only valid for 24 hours | Rotate the secret value with `put-secret-value`; no redeploy needed |
+| Logs show `RateLimitedError` / `429` responses | Riot rate limits were hit | The sensor runs every 5 minutes on its own; wait for the next run or use a key with higher limits |
+| Stats collection repeatedly logs `404` for a match | Match-V5 has not finished processing the game yet | Expected: the state machine retries with exponential backoff, and only gives up into the stats DLQ after eight attempts |
+| Logs say "game already tracked" | The same game was detected again | Expected: execution names are deterministic, so duplicates are no-ops and never send a second notification |
+| Deploy job fails on `main` | The GitHub OIDC role or repository secrets are missing | Follow the CI/CD setup section below |
+
 ## CI/CD and deployment
 
 `.github/workflows/ci.yml` runs ruff and pytest on every push and pull request,
