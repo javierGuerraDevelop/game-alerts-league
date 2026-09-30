@@ -120,9 +120,7 @@ sam local invoke IsPlayerInGameFunction --event events/is_player_in_game.json
 Set `RIOT_API_KEY` (the local fallback), the table names, and the region variables in
 an `env.json` file for local invocations.
 
-## Operations
-
-### Alarms
+## Alarms
 
 All alarms publish to the alarms topic and email `RecipientEmail`. They use
 `TreatMissingData: notBreaching`, so they only fire on real activity:
@@ -133,16 +131,6 @@ All alarms publish to the alarms topic and email `RecipientEmail`. They use
 | `DetectionDLQAlarm` | `AWS/SQS` `ApproximateNumberOfMessagesVisible` for the detection DLQ | any visible message in a 5-minute period |
 | `StatsDLQAlarm` | `AWS/SQS` `ApproximateNumberOfMessagesVisible` for the stats DLQ | any visible message in a 5-minute period |
 | `StateMachineFailuresAlarm` | `AWS/States` `ExecutionsFailed` | any failed execution in a 5-minute period |
-
-## Troubleshooting
-
-| Symptom | Likely cause | What to do |
-|---|---|---|
-| Account lookups return `403` and read "API key may be expired" | A Riot development key is only valid for 24 hours | Rotate the secret value with `put-secret-value`; no redeploy needed |
-| Logs show `RateLimitedError` / `429` responses | Riot rate limits were hit | The sensor runs every 5 minutes on its own; wait for the next run or use a key with higher limits |
-| Stats collection repeatedly logs `404` for a match | Match-V5 has not finished processing the game yet | Expected: the state machine retries with exponential backoff, and only gives up into the stats DLQ after eight attempts |
-| Logs say "game already tracked" | The same game was detected again | Expected: execution names are deterministic, so duplicates are no-ops and never send a second notification |
-| Deploy job fails on `main` | The GitHub OIDC role or repository secrets are missing | Follow the CI/CD setup section below |
 
 ## CI/CD and deployment
 
